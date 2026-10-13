@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Criceto Mood (MediaPipe)</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #fdf6ec; margin: 0; padding: 24px; text-align: center; }
+  .wrap { display: flex; gap: 24px; justify-content: center; align-items: center; flex-wrap: wrap; }
+  video { width: 360px; max-width: 100%; border-radius: 16px; transform: scaleX(-1); background: #000; }
+  #sticker { width: 260px; height: 260px; display: flex; align-items: center; justify-content: center;
+             font-size: 100px; background: #fff; border-radius: 24px; box-shadow: 0 4px 16px #0002; }
+  #sticker img { max-width: 100%; max-height: 100%; }
+  #label { font-size: 18px; color: #555; }
+  #debug { font: 13px ui-monospace, monospace; color: #888; white-space: pre; }
+</style>
+</head>
+<body>
+<h1>🐹 Criceto Mood</h1>
+<div class="wrap">
+  <video id="video" autoplay muted playsinline></video>
+  <div id="sticker">🐹</div>
+</div>
+<p id="label">Caricamento modelli…</p>
+<div id="debug"></div>
+
+<script type="module">
+import { FaceLandmarker, HandLandmarker, FilesetResolver } from
+  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/+esm";
+
+// ---------- STICKER ----------
+// Se per un'espressione ci sono più immagini, ne viene scelta una a caso.
+const STICKERS = {
+  neutral:      { emoji: "🐹",   imgs: ["stickers/2.webp"],             nome: "neutro" },
+  happy:        { emoji: "😊🐹", imgs: ["stickers/4.webp"],             nome: "sorriso" },
+  laughing:     { emoji: "😄🐹", imgs: ["stickers/1.webp"],             nome: "risata" },
+  grin:         { emoji: "😁🐹", imgs: ["stickers/grin.webp"],          nome: "sorriso estremo" },
+  smug:         { emoji: "😏🐹", imgs: ["stickers/smug.webp"],          nome: "sorrisetto con sopracciglia giù" },
+  sad:          { emoji: "😢🐹", imgs: ["stickers/5.webp"],             nome: "triste" },
+  worried:      { emoji: "🥺🐹", imgs: ["stickers/worried.webp"],       nome: "preoccupato" },
+  angry:        { emoji: "😡🐹", imgs: ["stickers/6.webp"],             nome: "arrabbiato" },
+  surprised:    { emoji: "😱🐹", imgs: ["stickers/9.webp"],             nome: "sorpreso" },
+  fearful:      { emoji: "😨🐹", imgs: ["stickers/3.webp"],             nome: "spaventato" },
+  disgusted:    { emoji: "🤢🐹", imgs: ["stickers/11.webp", "stickers/8.webp"], nome: "disgustato" },
+  sleepy:       { emoji: "😴🐹", imgs: ["stickers/7.webp"],             nome: "assonnato" },
+  ooh:          { emoji: "😮🐹", imgs: ["stickers/ooh.webp"],           nome: "bocca a O" },
+  // --- gesti delle mani ---
+  heart:        { emoji: "🫶🐹", imgs: ["stickers/heart.webp"],         nome: "cuore con le mani" },
+  scheming:     { emoji: "🤔🐹", imgs: ["stickers/scheming.webp"],      nome: "dita che si toccano" },
+  middlefinger: { emoji: "😤🐹", imgs: ["stickers/middlefinger.webp"],  nome: "dito medio" },
+  thumbsup:     { emoji: "👍🐹", imgs: ["stickers/10.webp"],            nome: "pollice in su" },
+};
+
+// ---------- SOGLIE VISO (da 0 a 1): modificale per tarare la sensibilità ----------
+const T = {
+  smile: 0.35,          // sorriso
+  grinSmile: 0.65,      // sorriso estremo (con sopracciglia neutre)
+  laughSmile: 0.5,      // sorriso + bocca aperta = risata
+  laughJaw: 0.25,
+  surpriseJaw: 0.35,    // bocca molto aperta + sopracciglia/occhi spalancati
+  browUp: 0.4,
+  eyeWide: 0.3,
+  fearWide: 0.4,
+  browDown: 0.5,        // sopracciglia aggrottate = arrabbiato
+  smugBrowDown: 0.3,    // sopracciglia leggermente giù + bocca chiusa un po' in su = sorrisetto
+  smugSmileMin: 0.12,
+  worriedBrowUp: 0.45,  // sopracciglia interne alzate + bocca appena aperta = preoccupato
+  frown: 0.3,           // angoli della bocca in giù = triste
+  sneer: 0.4,           // naso arricciato = disgustato
+  funnel: 0.35,         // labbra a "O"
+  pucker: 0.5,
+  blink: 0.6,           // occhi chiusi = assonnato
+};
+
+// Quanti frame consecutivi servono prima di cambiare sticker (≈10-30 frame al secondo)
+const HOLD = { default: 4, sleepy: 12 };
+
+const video = document.getElementById("video");
+const stickerEl = document.getElementById("sticker");
+const label = document.getElementById("label");
+const debugEl = document.getElementById("debug");
+
+function show(expr) {
+  const s = STICKERS[expr];
+  label.textContent = "Espressione: " + s.nome;
+  const img = new Image();
+  img.alt = s.nome;
+  img.onerror = () => { stickerEl.textContent = s.emoji; };
+  img.src = s.imgs[Math.floor(Math.random() * s.imgs.length)];
+  stickerEl.replaceChildren(img);
+}
+
+// <classify-face>
+function classifyFace(b) {
+  const avg = (a, c) => ((b[a] ?? 0) + (b[c] ?? 0)) / 2;
+  const smile    = avg("mouthSmileLeft", "mouthSmileRight");
+  const jaw      = b.jawOpen ?? 0;
+  const browUp   = b.browInnerUp ?? 0;
+  const browDown = avg("browDownLeft", "browDownRight");
+  const blink    = avg("eyeBlinkLeft", "eyeBlinkRight");
+  const wide     = avg("eyeWideLeft", "eyeWideRight");
+  const frown    = avg("mouthFrownLeft", "mouthFrownRight");
+  const sneer    = avg("noseSneerLeft", "noseSneerRight");
+  const upperUp  = avg("mouthUpperUpLeft", "mouthUpperUpRight");
+  const funnel   = b.mouthFunnel ?? 0;
+  const pucker   = b.mouthPucker ?? 0;
+
+  const dbg =
+    `sorriso ${smile.toFixed(2)}  bocca ${jaw.toFixed(2)}  sopr.su ${browUp.toFixed(2)}  sopr.giù ${browDown.toFixed(2)}\n` +
+    `occhi chiusi ${blink.toFixed(2)}  occhi spalancati ${wide.toFixed(2)}  bocca giù ${frown.toFixed(2)}  naso ${sneer.toFixed(2)}  O ${Math.max(funnel, pucker).toFixed(2)}`;
+
+  let expr = "neutral";
+  if (blink > T.blink) expr = "sleepy";
+  else if (jaw > T.surpriseJaw && (browUp > T.browUp || wide > T.eyeWide) && smile < T.smile) expr = "surprised";
+  else if (smile > T.grinSmile && jaw < T.laughJaw && browUp < 0.3 && browDown < 0.3) expr = "grin";
+  else if (smile > T.laughSmile && jaw > T.laughJaw) expr = "laughing";
+  else if (browDown > T.smugBrowDown && smile > T.smugSmileMin && smile < T.laughSmile && jaw < 0.15) expr = "smug";
+  else if (smile > T.smile) expr = "happy";
+  else if (funnel > T.funnel || pucker > T.pucker) expr = "ooh";
+  else if (sneer > T.sneer || (upperUp > 0.45 && smile < 0.2)) expr = "disgusted";
+  else if (browDown > T.browDown) expr = "angry";
+  else if (browUp > T.worriedBrowUp && jaw > 0.06 && jaw < 0.35 && smile < 0.2 && wide < T.fearWide) expr = "worried";
+  else if (wide > T.fearWide && browUp > T.browUp) expr = "fearful";
+  else if (frown > T.frown || (browUp > 0.5 && smile < 0.1 && jaw < 0.06)) expr = "sad";
+  return { expr, dbg };
+}
+// </classify-face>
+
+// <classify-hands>
+// Distanze in pixel (le coordinate di MediaPipe sono normalizzate 0-1)
+const dist = (a, b) => Math.hypot((a.x - b.x) * video.videoWidth, (a.y - b.y) * video.videoHeight);
+const py = p => p.y * video.videoHeight;
+
+function handInfo(h) {
+  const scale = dist(h[0], h[9]);                       // polso → nocca del medio: "taglia" della mano
+  const ext    = (tip, pip) => dist(h[tip], h[0]) > dist(h[pip], h[0]) * 1.15;  // dito steso
+  const curled = (tip, pip) => dist(h[tip], h[0]) < dist(h[pip], h[0]) * 1.05;  // dito piegato
+  return {
+    h, scale,
+    index: ext(8, 6), middle: ext(12, 10),
+    indexC: curled(8, 6), middleC: curled(12, 10), ringC: curled(16, 14), pinkyC: curled(20, 18),
+    thumbOut: dist(h[4], h[5]) > scale * 0.6,
+  };
+}
+
+function classifyHands(hands) {
+  const info = hands.map(handInfo);
+  let dbg = `mani: ${info.length}`;
+
+  if (info.length === 2) {
+    const [a, b] = info;
+    const s = (a.scale + b.scale) / 2;
+    const dt = i => dist(a.h[i], b.h[i]);              // distanza tra lo stesso punto delle due mani
+    dbg += `  punte indici ${(dt(8) / s).toFixed(2)}  medi ${(dt(12) / s).toFixed(2)}  pollici ${(dt(4) / s).toFixed(2)}`;
+
+    // dita che si toccano a punta: indici e medi stesi, punte vicine
+    if (a.index && a.middle && b.index && b.middle && dt(8) < 0.5 * s && dt(12) < 0.5 * s)
+      return { gesture: "scheming", dbg };
+
+    // cuore: punte degli indici vicine, punte dei pollici vicine, indici più in alto dei pollici
+    const idxY = (py(a.h[8]) + py(b.h[8])) / 2, thY = (py(a.h[4]) + py(b.h[4])) / 2;
+    if (dt(8) < 0.6 * s && dt(4) < 0.6 * s && idxY < thY - 0.2 * s)
+      return { gesture: "heart", dbg };
+  }
+
+  for (const f of info) {
+    // dito medio: medio steso, indice/anulare/mignolo piegati
+    if (f.middle && f.indexC && f.ringC && f.pinkyC) return { gesture: "middlefinger", dbg };
+    // pollice in su: pollice steso e rivolto in alto, altre dita piegate
+    if (f.thumbOut && f.indexC && f.middleC && f.ringC && f.pinkyC &&
+        py(f.h[4]) < py(f.h[3]) && py(f.h[4]) < py(f.h[5]) - 0.2 * f.scale)
+      return { gesture: "thumbsup", dbg };
+  }
+  return { gesture: null, dbg };
+}
+// </classify-hands>
+
+// ---------- AVVIO ----------
+let faceLandmarker, handLandmarker;
+let current = "neutral", candidate = null, count = 0;
+let lastTime = -1;
+
+async function start() {
+  const fileset = await FilesetResolver.forVisionTasks(
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+
+  faceLandmarker = await FaceLandmarker.createFromOptions(fileset, {
+    baseOptions: {
+      modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+      delegate: "GPU",
+    },
+    runningMode: "VIDEO",
+    numFaces: 1,
+    outputFaceBlendshapes: true,
+  });
+
+  handLandmarker = await HandLandmarker.createFromOptions(fileset, {
+    baseOptions: {
+      modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+      delegate: "GPU",
+    },
+    runningMode: "VIDEO",
+    numHands: 2,
+  });
+
+  video.srcObject = await navigator.mediaDevices.getUserMedia({ video: true });
+  await video.play();
+  label.textContent = "Fai una faccia! (o un gesto con le mani)";
+  show("neutral");
+  requestAnimationFrame(loop);
+}
+
+function loop() {
+  if (video.currentTime !== lastTime) {
+    lastTime = video.currentTime;
+    const now = performance.now();
+
+    const faceRes = faceLandmarker.detectForVideo(video, now);
+    const handRes = handLandmarker.detectForVideo(video, now);
+
+    // le mani hanno la precedenza sul viso
+    const hands = classifyHands(handRes.landmarks ?? []);
+    let expr = hands.gesture;
+    let dbg = hands.dbg;
+
+    const cats = faceRes.faceBlendshapes?.[0]?.categories;
+    if (cats) {
+      const b = Object.fromEntries(cats.map(c => [c.categoryName, c.score]));
+      const face = classifyFace(b);
+      dbg = face.dbg + "\n" + dbg;
+      if (!expr) expr = face.expr;
+    }
+    debugEl.textContent = dbg;
+
+    if (expr) {
+      if (expr === candidate) count++; else { candidate = expr; count = 1; }
+      const need = HOLD[expr] ?? HOLD.default;
+      if (count >= need && expr !== current) { current = expr; show(expr); }
+    }
+  }
+  requestAnimationFrame(loop);
+}
+
+start().catch(e => { label.textContent = "Errore: " + e.message; });
+</script>
+</body>
+</html>
