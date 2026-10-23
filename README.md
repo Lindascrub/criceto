@@ -1,4 +1,4 @@
-# 🐹 Criceto Mood
+# Criceto Mood
 
 Riconosce espressioni del viso e gesti delle mani dalla webcam con MediaPipe e mostra lo sticker del criceto corrispondente. L'elaborazione avviene tutta nel browser: nessuna immagine viene inviata.
 
