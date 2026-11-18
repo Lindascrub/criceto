@@ -1,0 +1,8 @@
+.git
+.claude
+.wrangler
+node_modules
+stieckersJPEG
+wrangler.jsonc
+.assetsignore
+README.md

@@ -5,14 +5,37 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Criceto Mood (MediaPipe)</title>
 <style>
-  body { font-family: system-ui, sans-serif; background: #fdf6ec; margin: 0; padding: 24px; text-align: center; }
+  :root { --box: min(520px, calc(50vw - 48px)); }
+  body { font-family: system-ui, sans-serif; background: #fdf6ec; margin: 0; padding: 24px 16px; text-align: center; }
+  h1 { margin: 0 0 16px; }
   .wrap { display: flex; gap: 24px; justify-content: center; align-items: center; flex-wrap: wrap; }
-  video { width: 360px; max-width: 100%; border-radius: 16px; transform: scaleX(-1); background: #000; }
-  #sticker { width: 260px; height: 260px; display: flex; align-items: center; justify-content: center;
-             font-size: 100px; background: #fff; border-radius: 24px; box-shadow: 0 4px 16px #0002; }
-  #sticker img { max-width: 100%; max-height: 100%; }
-  #label { font-size: 18px; color: #555; }
-  #debug { font: 13px ui-monospace, monospace; color: #888; white-space: pre; }
+  /* webcam e sticker: due quadrati della stessa misura */
+  #video, #sticker { width: var(--box); height: var(--box); border-radius: 24px; box-shadow: 0 4px 16px #0002; }
+  #video { object-fit: cover; transform: scaleX(-1); background: #000; }
+  #sticker { display: flex; align-items: center; justify-content: center; font-size: calc(var(--box) * 0.4);
+             background: #fff; overflow: hidden; }
+  #sticker img { width: 90%; height: 90%; object-fit: contain; }
+  #label { font-size: 20px; color: #444; margin: 16px 0 4px; font-weight: 600; }
+  #desc { font-size: 15px; color: #777; margin: 0 auto 12px; max-width: 640px; min-height: 1.4em; }
+  #debug { font: 13px ui-monospace, monospace; color: #888; white-space: pre-wrap; }
+  @media (max-width: 700px) { :root { --box: min(92vw, 520px); } }
+  /* allenamento */
+  #train { max-width: 1100px; margin: 24px auto 0; padding: 16px; background: #fff; border-radius: 24px;
+           box-shadow: 0 4px 16px #0001; }
+  #train h2 { margin: 0 0 8px; font-size: 20px; }
+  #train .bar { display: flex; gap: 12px; justify-content: center; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+  #train button, #train label.btn { font: inherit; font-size: 14px; padding: 6px 12px; border-radius: 999px;
+           border: 1px solid #d8c8b0; background: #fdf6ec; cursor: pointer; }
+  #recStatus { min-height: 1.4em; font-weight: 600; color: #b5651d; }
+  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 10px; margin-top: 8px; }
+  #grid .cell { border: 2px solid #eee; border-radius: 16px; padding: 6px; background: #fff; cursor: pointer;
+                display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 12px; }
+  #grid .cell:hover { border-color: #e0b27a; }
+  #grid .cell.done { border-color: #8cc28c; }
+  #grid .cell.rec { border-color: #e06c3c; background: #fff3ea; }
+  #grid img { width: 72px; height: 72px; object-fit: contain; }
+  #grid .count { color: #888; }
+  #grid .del { font-size: 11px; color: #c44; text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -22,7 +45,23 @@
   <div id="sticker">🐹</div>
 </div>
 <p id="label">Caricamento modelli…</p>
+<p id="desc"></p>
 <div id="debug"></div>
+
+<section id="train">
+  <h2>🎓 Insegna le tue espressioni</h2>
+  <p>Clicca un criceto, aspetta il conto alla rovescia e tieni quell'espressione (o gesto) per 5 secondi,
+     muovendo un po' la testa. Registra anche il neutro! Servono almeno 2 criceti registrati.</p>
+  <div class="bar">
+    <label><input type="radio" name="mode" value="knn" checked> Il mio modello</label>
+    <label><input type="radio" name="mode" value="rules"> Regole</label>
+    <button id="exportBtn">💾 Esporta</button>
+    <label class="btn">📂 Importa <input id="importInput" type="file" accept=".json" hidden></label>
+    <button id="clearBtn">🗑️ Cancella tutto</button>
+  </div>
+  <p id="recStatus"></p>
+  <div id="grid"></div>
+</section>
 
 <script type="module">
 import { FaceLandmarker, HandLandmarker, FilesetResolver } from
@@ -31,58 +70,116 @@ import { FaceLandmarker, HandLandmarker, FilesetResolver } from
 // ---------- STICKER ----------
 // Se per un'espressione ci sono più immagini, ne viene scelta una a caso.
 const STICKERS = {
-  neutral:      { emoji: "🐹",   imgs: ["stickers/2.webp"],             nome: "neutro" },
-  happy:        { emoji: "😊🐹", imgs: ["stickers/4.webp"],             nome: "sorriso" },
-  laughing:     { emoji: "😄🐹", imgs: ["stickers/1.webp"],             nome: "risata" },
-  grin:         { emoji: "😁🐹", imgs: ["stickers/grin.webp"],          nome: "sorriso estremo" },
-  smug:         { emoji: "😏🐹", imgs: ["stickers/smug.webp"],          nome: "sorrisetto con sopracciglia giù" },
-  sad:          { emoji: "😢🐹", imgs: ["stickers/5.webp"],             nome: "triste" },
-  worried:      { emoji: "🥺🐹", imgs: ["stickers/worried.webp"],       nome: "preoccupato" },
-  angry:        { emoji: "😡🐹", imgs: ["stickers/6.webp"],             nome: "arrabbiato" },
-  surprised:    { emoji: "😱🐹", imgs: ["stickers/9.webp"],             nome: "sorpreso" },
-  fearful:      { emoji: "😨🐹", imgs: ["stickers/3.webp"],             nome: "spaventato" },
-  disgusted:    { emoji: "🤢🐹", imgs: ["stickers/11.webp", "stickers/8.webp"], nome: "disgustato" },
-  sleepy:       { emoji: "😴🐹", imgs: ["stickers/7.webp"],             nome: "assonnato" },
-  ooh:          { emoji: "😮🐹", imgs: ["stickers/ooh.webp"],           nome: "bocca a O" },
+  // --- solo viso ---
+  DisgustedNeutral:  { emoji: "😐🐹", imgs: ["stickers/DisgustedNeutral.webp"],  nome: "neutro",
+                       desc: "occhi aperti, bocca dritta" },
+  NeutroMento:       { emoji: "🙂🐹", imgs: ["stickers/NeutroMento.webp"],       nome: "neutro con doppio mento",
+                       desc: "leggero sorriso, occhi ad apertura normale, sopracciglia neutre, doppio mento" },
+  Happy:             { emoji: "😊🐹", imgs: ["stickers/Happy.webp"],             nome: "felice",
+                       desc: "sorriso ampio, occhi aperti, sopracciglia normali" },
+  VeryHappy:         { emoji: "😄🐹", imgs: ["stickers/VeryHappy.webp"],         nome: "molto felice",
+                       desc: "sorriso ampio con bocca aperta, occhi leggermente chiusi" },
+  DHappy:            { emoji: "😁🐹", imgs: ["stickers/DHappy.webp"],            nome: "sorrisone a denti",
+                       desc: "labbro inferiore che non si vede, metà denti visibili, sorriso grande, occhi socchiusi" },
+  creepyGrin:        { emoji: "😬🐹", imgs: ["stickers/creepyGrin.webp"],        nome: "ghigno inquietante",
+                       desc: "sorriso estremamente largo con denti in vista, narici aperte, occhi spalancati" },
+  susHappy:          { emoji: "😏🐹", imgs: ["stickers/susHappy.webp"],          nome: "sospettoso felice",
+                       desc: "un sopracciglio più alto dell'altro, bocca chiusa piegata in su" },
+  Mucha:             { emoji: "🤨🐹", imgs: ["stickers/Mucha.webp"],             nome: "mucha",
+                       desc: "bocca neutra, un occhio socchiuso con il sopracciglio alzato" },
+  smug:              { emoji: "😌🐹", imgs: ["stickers/smug.webp"],              nome: "compiaciuto",
+                       desc: "occhi socchiusi, sopracciglia molto alzate, guance risucchiate, bocca appena sorridente" },
+  ShockedSlightly:   { emoji: "😳🐹", imgs: ["stickers/ShockedSlightly.webp"],   nome: "un po' scioccato",
+                       desc: "occhi spalancati, bocca leggermente piegata in giù" },
+  ooh:               { emoji: "😮🐹", imgs: ["stickers/ooh.webp"],               nome: "ooh",
+                       desc: "bocca aperta, occhi aperti, sopracciglia in su (mani ai lati della testa all'altezza degli occhi)" },
+  Fancy:             { emoji: "😗🐹", imgs: ["stickers/Fancy.webp"],             nome: "fancy",
+                       desc: "bocca chiusa a bacio, mano alzata" },
+  breathing:         { emoji: "😮‍💨🐹", imgs: ["stickers/breathing.webp"],      nome: "respiro",
+                       desc: "occhi chiusi, testa un po' all'insù, bocca appena aperta" },
+  VerySus:           { emoji: "🧐🐹", imgs: ["stickers/VerySus.webp"],           nome: "molto sospettoso",
+                       desc: "bocca chiusa, occhi chiusi, sopracciglia unite verso il centro" },
+  Underchin:         { emoji: "😙🐹", imgs: ["stickers/Underchin.webp"],         nome: "sotto il mento",
+                       desc: "bocca arricciata verso l'alto, occhi socchiusi" },
+  HalfWorried:       { emoji: "🫣🐹", imgs: ["stickers/HalfWorried.webp"],       nome: "mezzo preoccupato",
+                       desc: "faccia girata di lato (metà visibile), sopracciglia un po' unite, bocca neutra" },
+  Villan:            { emoji: "😈🐹", imgs: ["stickers/Villan.webp"],            nome: "cattivo",
+                       desc: "sopracciglia molto vicine agli occhi, occhi aperti, bocca chiusa" },
+  Angry:             { emoji: "😡🐹", imgs: ["stickers/Angry.webp"],             nome: "arrabbiato",
+                       desc: "sopracciglia in giù \\ /, bocca aperta con denti digrignati" },
+  disgusted:         { emoji: "🤢🐹", imgs: ["stickers/worried.webp"],           nome: "disgustato",
+                       desc: "sopracciglia un po' alzate e inclinate, narici in vista, occhi socchiusi, bocca aperta in giù" },
+  CryingSad:         { emoji: "😭🐹", imgs: ["stickers/CryingSad.webp"],         nome: "piange",
+                       desc: "occhi aperti, bocca spalancata verso il basso, sopracciglia alzate / \\, mani alzate" },
   // --- gesti delle mani ---
-  heart:        { emoji: "🫶🐹", imgs: ["stickers/heart.webp"],         nome: "cuore con le mani" },
-  scheming:     { emoji: "🤔🐹", imgs: ["stickers/scheming.webp"],      nome: "dita che si toccano" },
-  middlefinger: { emoji: "😤🐹", imgs: ["stickers/middlefinger.webp"],  nome: "dito medio" },
-  thumbsup:     { emoji: "👍🐹", imgs: ["stickers/10.webp"],            nome: "pollice in su" },
+  ShySad:            { emoji: "🥺🐹", imgs: ["stickers/ShySad.webp"],            nome: "timido triste",
+                       desc: "sopracciglia verso l'alto, bocca aperta verso il basso, mani che si toccano" },
+  HappyShy:          { emoji: "☺️🐹", imgs: ["stickers/HappyShy.webp"],          nome: "timido felice",
+                       desc: "mani chiuse al centro, sorriso lieve a bocca chiusa, occhi che guardano in su" },
+  ExtremeHappy:      { emoji: "🤩🐹", imgs: ["stickers/ExtremeHappy.webp"],      nome: "felicissimo",
+                       desc: "mani alzate, bocca aperta, occhi socchiusi" },
+  angryGrin:         { emoji: "😤🐹", imgs: ["stickers/angryGrin.webp"],         nome: "ghigno arrabbiato",
+                       desc: "pugni chiusi alzati, denti in vista, occhi chiusi, sopracciglia aggrottate" },
+  heartHappy:        { emoji: "🫶🐹", imgs: ["stickers/heartHappy.webp"],        nome: "cuore con le mani",
+                       desc: "mani che formano un cuore, sorriso a bocca aperta, occhi socchiusi" },
+  scheming:          { emoji: "🤔🐹", imgs: ["stickers/scheming.webp"],          nome: "tramando",
+                       desc: "occhi socchiusi, polpastrelli delle due mani che si toccano (pollice con pollice, indice con indice…)" },
+  Shrug:             { emoji: "🤷🐹", imgs: ["stickers/Shrug.webp"],             nome: "boh",
+                       desc: "mani aperte con il palmo verso il cielo, bocca chiusa, testa un po' in giù" },
+  middlefingerAngry: { emoji: "🖕🐹", imgs: ["stickers/middlefingerAngry.webp"], nome: "dito medio arrabbiato",
+                       desc: "dito medio, bocca molto piegata in giù, sopracciglia in giù" },
+  MiddleFingerHappy: { emoji: "🖕😆🐹", imgs: ["stickers/MiddleFingerHappy.webp"], nome: "dito medio felice",
+                       desc: "dito medio alzato, bocca molto aperta piegata in su" },
+  thumbUp:           { emoji: "👍🐹", imgs: ["stickers/thumbUp.webp"],           nome: "pollice in su",
+                       desc: "pollice in su con una mano, sorriso leggero da un lato, occhi normali" },
+  thumbdown:         { emoji: "👎🐹", imgs: ["stickers/thumbdown.webp"],         nome: "pollice in giù",
+                       desc: "pollice in giù con una mano, sopracciglia in giù, bocca piegata in giù" },
+  ShutUp:            { emoji: "🤫🐹", imgs: ["stickers/ShutUp.webp"],            nome: "zitto",
+                       desc: "faccia neutra, indice in verticale sulla bocca" },
+  nerd:              { emoji: "🤓🐹", imgs: ["stickers/nerd.webp"],              nome: "nerd",
+                       desc: "sorriso leggero, bocca un po' aperta, indice alzato verso l'alto" },
+  Scuba:             { emoji: "🤿🐹", imgs: ["stickers/Scuba.webp"],             nome: "scuba",
+                       desc: "una mano tappa il naso, l'altra verso il centro con le dita in vista, labbra un po' all'insù" },
+  guard:             { emoji: "💂🐹", imgs: ["stickers/guard.webp"],             nome: "guardia",
+                       desc: "faccia neutra, mano inclinata sulla testa (saluto)" },
 };
 
 // ---------- SOGLIE VISO (da 0 a 1): modificale per tarare la sensibilità ----------
 const T = {
-  smile: 0.35,          // sorriso
-  grinSmile: 0.65,      // sorriso estremo (con sopracciglia neutre)
-  laughSmile: 0.5,      // sorriso + bocca aperta = risata
-  laughJaw: 0.25,
-  surpriseJaw: 0.35,    // bocca molto aperta + sopracciglia/occhi spalancati
+  slightSmile: 0.12,    // sorriso leggero = NeutroMento
+  smile: 0.35,          // sorriso = Happy
+  bigSmile: 0.5,        // sorriso + bocca aperta = VeryHappy
+  bigSmileJaw: 0.25,
+  creepySmile: 0.6,     // sorriso enorme + occhi spalancati = creepyGrin
+  rollLower: 0.35,      // labbro inferiore nascosto = DHappy
+  eyeWide: 0.35,        // occhi spalancati = ShockedSlightly
+  blink: 0.6,           // occhi chiusi = breathing / VerySus
+  squint: 0.3,          // occhi socchiusi
   browUp: 0.4,
-  eyeWide: 0.3,
-  fearWide: 0.4,
-  browDown: 0.5,        // sopracciglia aggrottate = arrabbiato
-  smugBrowDown: 0.3,    // sopracciglia leggermente giù + bocca chiusa un po' in su = sorrisetto
-  smugSmileMin: 0.12,
-  worriedBrowUp: 0.45,  // sopracciglia interne alzate + bocca appena aperta = preoccupato
-  frown: 0.3,           // angoli della bocca in giù = triste
+  smugBrowUp: 0.5,      // sopracciglia molto alzate + occhi socchiusi = smug
+  browDown: 0.5,        // sopracciglia aggrottate = Villan (bocca chiusa) / Angry (bocca aperta)
+  browAsym: 0.25,       // un sopracciglio più alto dell'altro = susHappy / Mucha
+  frown: 0.3,           // angoli della bocca in giù
   sneer: 0.4,           // naso arricciato = disgustato
-  funnel: 0.35,         // labbra a "O"
-  pucker: 0.5,
-  blink: 0.6,           // occhi chiusi = assonnato
+  funnel: 0.35,         // labbra a "O" = ooh
+  pucker: 0.5,          // bacio = Fancy
+  shrugLower: 0.45,     // bocca arricciata in su = Underchin
+  yaw: 0.3,             // testa girata (0 = dritta, 0.5 = di profilo) = HalfWorried
 };
 
 // Quanti frame consecutivi servono prima di cambiare sticker (≈10-30 frame al secondo)
-const HOLD = { default: 4, sleepy: 12 };
+const HOLD = { default: 4, breathing: 12, VerySus: 12 };
 
 const video = document.getElementById("video");
 const stickerEl = document.getElementById("sticker");
 const label = document.getElementById("label");
+const descEl = document.getElementById("desc");
 const debugEl = document.getElementById("debug");
 
 function show(expr) {
   const s = STICKERS[expr];
   label.textContent = "Espressione: " + s.nome;
+  descEl.textContent = s.desc;
   const img = new Image();
   img.alt = s.nome;
   img.onerror = () => { stickerEl.textContent = s.emoji; };
@@ -90,62 +187,98 @@ function show(expr) {
   stickerEl.replaceChildren(img);
 }
 
-// <classify-face>
-function classifyFace(b) {
+// Distanze in pixel (le coordinate di MediaPipe sono normalizzate 0-1)
+const dist = (a, b) => Math.hypot((a.x - b.x) * video.videoWidth, (a.y - b.y) * video.videoHeight);
+const px = p => p.x * video.videoWidth;
+const py = p => p.y * video.videoHeight;
+
+// <face-metrics>
+function faceMetrics(b) {
   const avg = (a, c) => ((b[a] ?? 0) + (b[c] ?? 0)) / 2;
-  const smile    = avg("mouthSmileLeft", "mouthSmileRight");
-  const jaw      = b.jawOpen ?? 0;
-  const browUp   = b.browInnerUp ?? 0;
-  const browDown = avg("browDownLeft", "browDownRight");
-  const blink    = avg("eyeBlinkLeft", "eyeBlinkRight");
-  const wide     = avg("eyeWideLeft", "eyeWideRight");
-  const frown    = avg("mouthFrownLeft", "mouthFrownRight");
-  const sneer    = avg("noseSneerLeft", "noseSneerRight");
-  const upperUp  = avg("mouthUpperUpLeft", "mouthUpperUpRight");
-  const funnel   = b.mouthFunnel ?? 0;
-  const pucker   = b.mouthPucker ?? 0;
+  return {
+    smile:    avg("mouthSmileLeft", "mouthSmileRight"),
+    jaw:      b.jawOpen ?? 0,
+    browUp:   b.browInnerUp ?? 0,
+    browOut:  avg("browOuterUpLeft", "browOuterUpRight"),
+    browAsym: Math.abs((b.browOuterUpLeft ?? 0) - (b.browOuterUpRight ?? 0)),
+    browDown: avg("browDownLeft", "browDownRight"),
+    blink:    avg("eyeBlinkLeft", "eyeBlinkRight"),
+    squint:   avg("eyeSquintLeft", "eyeSquintRight"),
+    wide:     avg("eyeWideLeft", "eyeWideRight"),
+    frown:    avg("mouthFrownLeft", "mouthFrownRight"),
+    sneer:    avg("noseSneerLeft", "noseSneerRight"),
+    upperUp:  avg("mouthUpperUpLeft", "mouthUpperUpRight"),
+    rollLower: b.mouthRollLower ?? 0,
+    shrugLower: b.mouthShrugLower ?? 0,
+    funnel:   b.mouthFunnel ?? 0,
+    pucker:   b.mouthPucker ?? 0,
+  };
+}
 
-  const dbg =
-    `sorriso ${smile.toFixed(2)}  bocca ${jaw.toFixed(2)}  sopr.su ${browUp.toFixed(2)}  sopr.giù ${browDown.toFixed(2)}\n` +
-    `occhi chiusi ${blink.toFixed(2)}  occhi spalancati ${wide.toFixed(2)}  bocca giù ${frown.toFixed(2)}  naso ${sneer.toFixed(2)}  O ${Math.max(funnel, pucker).toFixed(2)}`;
+// Punti di riferimento del viso (indici della face mesh di MediaPipe)
+function faceGeom(fl) {
+  const left = fl[234], right = fl[454], nose = fl[4];
+  return {
+    nose,
+    mouth:    { x: (fl[13].x + fl[14].x) / 2, y: (fl[13].y + fl[14].y) / 2 },
+    foreheadY: py(fl[10]),
+    eyeY:     (py(fl[159]) + py(fl[386])) / 2,
+    chinY:    py(fl[152]),
+    cx:       (px(left) + px(right)) / 2,
+    w:        dist(left, right),
+    h:        dist(fl[10], fl[152]),
+    // 0 = viso dritto, ~0.5 = di profilo
+    yaw:      Math.abs((px(nose) - px(left)) / (px(right) - px(left)) - 0.5),
+  };
+}
+// </face-metrics>
 
-  let expr = "neutral";
-  if (blink > T.blink) expr = "sleepy";
-  else if (jaw > T.surpriseJaw && (browUp > T.browUp || wide > T.eyeWide) && smile < T.smile) expr = "surprised";
-  else if (smile > T.grinSmile && jaw < T.laughJaw && browUp < 0.3 && browDown < 0.3) expr = "grin";
-  else if (smile > T.laughSmile && jaw > T.laughJaw) expr = "laughing";
-  else if (browDown > T.smugBrowDown && smile > T.smugSmileMin && smile < T.laughSmile && jaw < 0.15) expr = "smug";
-  else if (smile > T.smile) expr = "happy";
-  else if (funnel > T.funnel || pucker > T.pucker) expr = "ooh";
-  else if (sneer > T.sneer || (upperUp > 0.45 && smile < 0.2)) expr = "disgusted";
-  else if (browDown > T.browDown) expr = "angry";
-  else if (browUp > T.worriedBrowUp && jaw > 0.06 && jaw < 0.35 && smile < 0.2 && wide < T.fearWide) expr = "worried";
-  else if (wide > T.fearWide && browUp > T.browUp) expr = "fearful";
-  else if (frown > T.frown || (browUp > 0.5 && smile < 0.1 && jaw < 0.06)) expr = "sad";
-  return { expr, dbg };
+// <classify-face>
+function classifyFace(m, g) {
+  if (g && g.yaw > T.yaw) return "HalfWorried";
+  if (m.blink > T.blink) return m.browDown > 0.3 ? "VerySus" : "breathing";
+  if (m.smile > T.creepySmile && m.wide > T.eyeWide) return "creepyGrin";
+  if (m.smile > T.bigSmile && m.rollLower > T.rollLower) return "DHappy";
+  if (m.smile > T.bigSmile && m.jaw > T.bigSmileJaw) return "VeryHappy";
+  if (m.funnel > T.funnel && m.jaw > 0.15) return "ooh";
+  if (m.pucker > T.pucker) return "Fancy";
+  if (m.browDown > T.browDown) return (m.jaw > 0.15 || m.upperUp > 0.3) ? "Angry" : "Villan";
+  if (m.sneer > T.sneer || (m.upperUp > 0.45 && m.smile < 0.2)) return "disgusted";
+  if (m.jaw > 0.35 && m.frown > T.frown && m.browUp > T.browUp) return "CryingSad";
+  if (m.browAsym > T.browAsym) return m.smile > 0.15 ? "susHappy" : "Mucha";
+  if ((m.browUp + m.browOut) / 2 > T.smugBrowUp && m.squint > T.squint && m.smile > 0.08) return "smug";
+  if (m.wide > T.eyeWide && m.smile < 0.2) return "ShockedSlightly";
+  if (m.smile > T.smile) return "Happy";
+  if (m.shrugLower > T.shrugLower) return "Underchin";
+  if (m.frown > T.frown || (m.browUp > T.browUp && m.frown > 0.15)) return "ShySad";
+  if (m.smile > T.slightSmile) return "NeutroMento";
+  return "DisgustedNeutral";
 }
 // </classify-face>
 
 // <classify-hands>
-// Distanze in pixel (le coordinate di MediaPipe sono normalizzate 0-1)
-const dist = (a, b) => Math.hypot((a.x - b.x) * video.videoWidth, (a.y - b.y) * video.videoHeight);
-const py = p => p.y * video.videoHeight;
-
 function handInfo(h) {
   const scale = dist(h[0], h[9]);                       // polso → nocca del medio: "taglia" della mano
   const ext    = (tip, pip) => dist(h[tip], h[0]) > dist(h[pip], h[0]) * 1.15;  // dito steso
   const curled = (tip, pip) => dist(h[tip], h[0]) < dist(h[pip], h[0]) * 1.05;  // dito piegato
-  return {
-    h, scale,
-    index: ext(8, 6), middle: ext(12, 10),
+  const f = {
+    h, scale, c: h[9],                                  // c = centro del palmo
+    index: ext(8, 6), middle: ext(12, 10), ring: ext(16, 14), pinky: ext(20, 18),
     indexC: curled(8, 6), middleC: curled(12, 10), ringC: curled(16, 14), pinkyC: curled(20, 18),
     thumbOut: dist(h[4], h[5]) > scale * 0.6,
   };
+  f.fist = f.indexC && f.middleC && f.ringC && f.pinkyC;
+  f.open = f.index && f.middle && f.ring && f.pinky;
+  f.onlyIndex = f.index && f.middleC && f.ringC && f.pinkyC;
+  f.onlyMiddle = f.middle && f.indexC && f.ringC && f.pinkyC;
+  return f;
 }
 
-function classifyHands(hands) {
+// m = metriche del viso, g = geometria del viso (possono essere null se il viso non si vede)
+function classifyHands(hands, m, g) {
   const info = hands.map(handInfo);
   let dbg = `mani: ${info.length}`;
+  const smiling = m && m.smile > 0.3;
 
   if (info.length === 2) {
     const [a, b] = info;
@@ -153,31 +286,190 @@ function classifyHands(hands) {
     const dt = i => dist(a.h[i], b.h[i]);              // distanza tra lo stesso punto delle due mani
     dbg += `  punte indici ${(dt(8) / s).toFixed(2)}  medi ${(dt(12) / s).toFixed(2)}  pollici ${(dt(4) / s).toFixed(2)}`;
 
-    // dita che si toccano a punta: indici e medi stesi, punte vicine
-    if (a.index && a.middle && b.index && b.middle && dt(8) < 0.5 * s && dt(12) < 0.5 * s)
+    // polpastrelli che si toccano: pollice con pollice, indice con indice, medio con medio
+    if (a.index && b.index && dt(8) < 0.5 * s && dt(12) < 0.5 * s && dt(4) < 0.6 * s)
       return { gesture: "scheming", dbg };
 
     // cuore: punte degli indici vicine, punte dei pollici vicine, indici più in alto dei pollici
     const idxY = (py(a.h[8]) + py(b.h[8])) / 2, thY = (py(a.h[4]) + py(b.h[4])) / 2;
     if (dt(8) < 0.6 * s && dt(4) < 0.6 * s && idxY < thY - 0.2 * s)
-      return { gesture: "heart", dbg };
+      return { gesture: "heartHappy", dbg };
+
+    if (g) {
+      const side = f => Math.abs(px(f.c) - g.cx) / g.w;   // distanza orizzontale dal centro del viso
+      // entrambe le mani sopra la fronte: felicissimo o piange
+      if (py(a.c) < g.foreheadY && py(b.c) < g.foreheadY)
+        return { gesture: smiling ? "ExtremeHappy" : "CryingSad", dbg };
+      // mani ai lati della testa, all'altezza degli occhi
+      const atEyes = f => Math.abs(py(f.c) - g.eyeY) < 0.4 * g.h && side(f) > 0.4 && side(f) < 1.5;
+      if (atEyes(a) && atEyes(b)) return { gesture: "ooh", dbg };
+      // pugni alzati + faccia arrabbiata / occhi strizzati
+      if (a.fist && b.fist && m && (m.browDown > 0.3 || m.blink > 0.5 || m.upperUp > 0.3))
+        return { gesture: "angryGrin", dbg };
+      // mani aperte, sotto il mento, larghe ai lati: boh
+      if (a.open && b.open && py(a.c) > g.chinY && py(b.c) > g.chinY && side(a) > 0.5 && side(b) > 0.5)
+        return { gesture: "Shrug", dbg };
+      // mani vicine al centro, sotto il naso: timido felice o triste
+      if (dist(a.c, b.c) < 2 * s && py(a.c) > py(g.nose) && py(b.c) > py(g.nose))
+        return { gesture: m && m.smile > 0.15 && m.frown < T.frown ? "HappyShy" : "ShySad", dbg };
+    }
   }
 
   for (const f of info) {
-    // dito medio: medio steso, indice/anulare/mignolo piegati
-    if (f.middle && f.indexC && f.ringC && f.pinkyC) return { gesture: "middlefinger", dbg };
+    // dito medio: felice se sorridi o hai la bocca spalancata, altrimenti arrabbiato
+    if (f.onlyMiddle)
+      return { gesture: m && (m.smile > 0.3 || m.jaw > 0.35) ? "MiddleFingerHappy" : "middlefingerAngry", dbg };
     // pollice in su: pollice steso e rivolto in alto, altre dita piegate
-    if (f.thumbOut && f.indexC && f.middleC && f.ringC && f.pinkyC &&
-        py(f.h[4]) < py(f.h[3]) && py(f.h[4]) < py(f.h[5]) - 0.2 * f.scale)
-      return { gesture: "thumbsup", dbg };
+    if (f.thumbOut && f.fist && py(f.h[4]) < py(f.h[3]) && py(f.h[4]) < py(f.h[5]) - 0.2 * f.scale)
+      return { gesture: "thumbUp", dbg };
+    // pollice in giù: pollice steso e rivolto in basso, altre dita piegate
+    if (f.thumbOut && f.fist && py(f.h[4]) > py(f.h[3]) && py(f.h[4]) > py(f.h[5]) + 0.2 * f.scale)
+      return { gesture: "thumbdown", dbg };
+    // solo indice steso e rivolto in alto: sulla bocca = zitto, altrimenti nerd
+    if (f.onlyIndex && py(f.h[8]) < py(f.h[6])) {
+      if (g && dist(f.h[8], g.mouth) < 0.35 * g.w) return { gesture: "ShutUp", dbg };
+      return { gesture: "nerd", dbg };
+    }
+    if (!g) continue;
+    // mano sul naso: scuba
+    if ([8, 12, 9].some(i => dist(f.h[i], g.nose) < 0.3 * g.w)) return { gesture: "Scuba", dbg };
+    // bocca a bacio + mano alzata sopra la bocca: fancy
+    if (m && m.pucker > T.pucker * 0.8 && py(f.c) < py(g.mouth)) return { gesture: "Fancy", dbg };
+    // mano sulla fronte/testa: guardia
+    if (py(f.c) < g.eyeY && py(f.c) > g.foreheadY - 0.6 * g.h && Math.abs(px(f.c) - g.cx) < 0.9 * g.w)
+      return { gesture: "guard", dbg };
   }
   return { gesture: null, dbg };
 }
 // </classify-hands>
 
+// ---------- IL MIO MODELLO (k-NN) ----------
+// Ogni frame diventa un vettore: 52 blendshape del viso + 8 numeri per ognuna delle 2 mani.
+// Il k-NN cerca i K campioni registrati più vicini e sceglie il criceto più votato.
+const K = 7;
+const MIN_CONF = 0.6;      // se meno del 60% dei vicini è d'accordo, lo sticker non cambia
+const HAND_W = 1.5;        // quanto pesano le mani rispetto al viso
+const REC = { countdown: 3000, duration: 5000, every: 100 };   // ms
+const STORE_KEY = "criceto-campioni-v1";
+
+const clamp = v => Math.max(-1, Math.min(1, v));
+function handFeat(h, g) {
+  const w = dist(h[0], h[9]);
+  const ext = (tip, pip) => Math.min(dist(h[tip], h[0]) / dist(h[pip], h[0]) - 1, 1);  // ~0 piegato, >0.3 steso
+  const rel = g ? [clamp((px(h[9]) - g.cx) / g.w / 2), clamp((py(h[9]) - g.eyeY) / g.h / 2)] : [0, 0];
+  return [1, ...rel, Math.min(dist(h[4], h[5]) / w, 1.5) / 1.5,
+          ext(8, 6), ext(12, 10), ext(16, 14), ext(20, 18)].map(v => v * HAND_W);
+}
+function features(cats, hands, g) {
+  const v = cats.map(c => c.score);
+  const sorted = [...hands].sort((a, b) => a[9].x - b[9].x).slice(0, 2);   // ordine fisso: da sinistra a destra
+  for (let i = 0; i < 2; i++) v.push(...(sorted[i] ? handFeat(sorted[i], g) : Array(8).fill(0)));
+  return v.map(x => Math.round(x * 1000) / 1000);
+}
+
+let samples = {};   // { nomeCriceto: [vettore, vettore, ...] }
+try { samples = JSON.parse(localStorage.getItem(STORE_KEY)) ?? {}; } catch { samples = {}; }
+function save() {
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(samples)); }
+  catch { recStatus.textContent = "⚠️ Non riesco a salvare nel browser: usa Esporta per non perdere i campioni."; }
+}
+const trained = () => Object.keys(samples).filter(k => samples[k]?.length);
+
+function knn(x) {
+  const near = [];
+  for (const [lab, arr] of Object.entries(samples))
+    for (const v of arr) {
+      if (v.length !== x.length) continue;
+      let d = 0;
+      for (let i = 0; i < x.length; i++) d += (x[i] - v[i]) ** 2;
+      near.push([d, lab]);
+    }
+  near.sort((a, b) => a[0] - b[0]);
+  const votes = {};
+  for (const [, lab] of near.slice(0, K)) votes[lab] = (votes[lab] ?? 0) + 1;
+  const [best, n] = Object.entries(votes).sort((a, b) => b[1] - a[1])[0] ?? [null, 0];
+  return { best, conf: n / Math.min(K, near.length || 1) };
+}
+
+// --- registrazione ---
+const grid = document.getElementById("grid");
+const recStatus = document.getElementById("recStatus");
+let rec = null;   // { lab, start, end, last }
+
+function renderGrid() {
+  grid.replaceChildren(...Object.entries(STICKERS).map(([lab, s]) => {
+    const n = samples[lab]?.length ?? 0;
+    const cell = document.createElement("div");
+    cell.className = "cell" + (n ? " done" : "") + (rec?.lab === lab ? " rec" : "");
+    cell.title = s.desc;
+    cell.innerHTML = `<img src="${s.imgs[0]}" alt=""><b>${s.nome}</b><span class="count">${n} campioni</span>`;
+    if (n) {
+      const del = document.createElement("span");
+      del.className = "del"; del.textContent = "cancella";
+      del.onclick = e => { e.stopPropagation(); delete samples[lab]; save(); renderGrid(); };
+      cell.append(del);
+    }
+    cell.onclick = () => startRec(lab);
+    return cell;
+  }));
+}
+
+function startRec(lab) {
+  if (!faceLandmarker) return;
+  const now = performance.now();
+  rec = { lab, start: now + REC.countdown, end: now + REC.countdown + REC.duration, last: 0, added: 0 };
+  current = lab; show(lab);
+  renderGrid();
+}
+
+function recTick(now, x) {
+  if (now < rec.start) {
+    recStatus.textContent = `Preparati a fare "${STICKERS[rec.lab].nome}"… ${Math.ceil((rec.start - now) / 1000)}`;
+  } else if (now < rec.end) {
+    if (x && now - rec.last >= REC.every) { (samples[rec.lab] ??= []).push(x); rec.last = now; rec.added++; }
+    recStatus.textContent = `🔴 Registro "${STICKERS[rec.lab].nome}": ${rec.added} campioni (${Math.ceil((rec.end - now) / 1000)} s)`;
+  } else {
+    recStatus.textContent = rec.added
+      ? `✅ "${STICKERS[rec.lab].nome}": aggiunti ${rec.added} campioni.`
+      : "⚠️ Nessun campione: il viso non era visibile.";
+    rec = null; save(); renderGrid();
+  }
+}
+
+document.getElementById("exportBtn").onclick = () => {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(samples)], { type: "application/json" }));
+  a.download = "modello.json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+document.getElementById("importInput").onchange = async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  try { samples = JSON.parse(await file.text()); save(); renderGrid(); recStatus.textContent = "📂 Modello importato."; }
+  catch { recStatus.textContent = "⚠️ File non valido."; }
+  e.target.value = "";
+};
+document.getElementById("clearBtn").onclick = () => {
+  if (!confirm("Cancellare tutti i campioni registrati?")) return;
+  samples = {}; save(); renderGrid();
+};
+const useKnn = () => document.querySelector('input[name="mode"]:checked').value === "knn" && trained().length >= 2;
+
+// Se il browser non ha campioni ma nel sito c'è un modello.json (esportato e messo nella cartella), lo carica
+async function loadDefaultModel() {
+  if (trained().length) return;
+  try {
+    const r = await fetch("modello.json");
+    if (r.ok) { samples = await r.json(); renderGrid(); }
+  } catch {}
+}
+renderGrid();
+loadDefaultModel();
+
 // ---------- AVVIO ----------
 let faceLandmarker, handLandmarker;
-let current = "neutral", candidate = null, count = 0;
+let current = "DisgustedNeutral", candidate = null, count = 0;
 let lastTime = -1;
 
 async function start() {
@@ -203,10 +495,12 @@ async function start() {
     numHands: 2,
   });
 
-  video.srcObject = await navigator.mediaDevices.getUserMedia({ video: true });
+  video.srcObject = await navigator.mediaDevices.getUserMedia({
+    video: { width: { ideal: 720 }, height: { ideal: 720 }, aspectRatio: { ideal: 1 } },
+  });
   await video.play();
   label.textContent = "Fai una faccia! (o un gesto con le mani)";
-  show("neutral");
+  show(current);
   requestAnimationFrame(loop);
 }
 
@@ -218,17 +512,31 @@ function loop() {
     const faceRes = faceLandmarker.detectForVideo(video, now);
     const handRes = handLandmarker.detectForVideo(video, now);
 
+    const cats = faceRes.faceBlendshapes?.[0]?.categories;
+    const fl = faceRes.faceLandmarks?.[0];
+    const m = cats ? faceMetrics(Object.fromEntries(cats.map(c => [c.categoryName, c.score]))) : null;
+    const g = fl ? faceGeom(fl) : null;
+
+    const x = cats ? features(cats, handRes.landmarks ?? [], g) : null;
+    if (rec) { recTick(now, x); requestAnimationFrame(loop); return; }
+
     // le mani hanno la precedenza sul viso
-    const hands = classifyHands(handRes.landmarks ?? []);
+    const hands = classifyHands(handRes.landmarks ?? [], m, g);
     let expr = hands.gesture;
     let dbg = hands.dbg;
+    const knnMode = useKnn();
+    if (knnMode) {
+      const p = x ? knn(x) : { best: null, conf: 0 };
+      expr = p.conf >= MIN_CONF ? p.best : null;
+      dbg = `il mio modello: ${p.best ? STICKERS[p.best].nome : "-"} (sicurezza ${(p.conf * 100).toFixed(0)}%)\n` + dbg;
+    }
 
-    const cats = faceRes.faceBlendshapes?.[0]?.categories;
-    if (cats) {
-      const b = Object.fromEntries(cats.map(c => [c.categoryName, c.score]));
-      const face = classifyFace(b);
-      dbg = face.dbg + "\n" + dbg;
-      if (!expr) expr = face.expr;
+    if (m) {
+      dbg =
+        `sorriso ${m.smile.toFixed(2)}  bocca ${m.jaw.toFixed(2)}  sopr.su ${m.browUp.toFixed(2)}  sopr.giù ${m.browDown.toFixed(2)}  sopr.asimm ${m.browAsym.toFixed(2)}\n` +
+        `occhi chiusi ${m.blink.toFixed(2)}  socchiusi ${m.squint.toFixed(2)}  spalancati ${m.wide.toFixed(2)}  bocca giù ${m.frown.toFixed(2)}  naso ${m.sneer.toFixed(2)}\n` +
+        `O ${m.funnel.toFixed(2)}  bacio ${m.pucker.toFixed(2)}  labbro inf. nascosto ${m.rollLower.toFixed(2)}  bocca in su ${m.shrugLower.toFixed(2)}  testa girata ${(g?.yaw ?? 0).toFixed(2)}\n` + dbg;
+      if (!expr && !knnMode) expr = classifyFace(m, g);
     }
     debugEl.textContent = dbg;
 
